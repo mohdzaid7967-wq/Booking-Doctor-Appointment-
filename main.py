@@ -1,48 +1,53 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from typing import List, Dict, Optional
 from agent import DoctorAppointmentAgent
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 import os
 
-# SSL fix (optional)
 os.environ.pop("SSL_CERT_FILE", None)
 
 app = FastAPI()
 
-# Request model
 class UserQuery(BaseModel):
-    id_number: int
-    messages: str
+    id_number: Optional[int] = 0
+    messages: List[Dict[str, str]]
 
-# Initialize agent + graph ONLY ONCE ✅
+# Initialize once at startup
 agent = DoctorAppointmentAgent()
 app_graph = agent.workflow()
 
 @app.post("/execute")
 def execute_agent(user_input: UserQuery):
-    
     try:
-        # Prepare input messages
-        user_messages = [
-            HumanMessage(content=user_input.messages)
-        ]
+        # Reconstruct LangChain Message History from Chatbot UI
+        langchain_msgs = []
+        for msg in user_input.messages:
+            if msg["role"] == "user":
+                langchain_msgs.append(HumanMessage(content=msg["content"]))
+            elif msg["role"] == "assistant":
+                langchain_msgs.append(AIMessage(content=msg["content"]))
 
         query_data = {
-            "messages": user_messages,
-            "id_number": user_input.id_number,
+            "messages": langchain_msgs,
+            "id_number": user_input.id_number or 0,
             "next": "",
-            "query": "",
             "current_reasoning": "",
         }
 
-        # Run graph
-        response = app_graph.invoke(query_data, config={"recursion_limit": 20})
+        response = app_graph.invoke(query_data, config={"recursion_limit": 25})
 
-        # Safe return
+        messages = response.get("messages", [])
+        last_ai_content = "I'm sorry, I could not process your request. Please try again."
+
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and msg.content and msg.content.strip():
+                last_ai_content = msg.content.strip()
+                break
+
         return {
             "status": "success",
-            "messages": str(response.get("messages", "No response")),
-            "next": response.get("next", ""),
+            "reply": last_ai_content,
             "reasoning": response.get("current_reasoning", "")
         }
 
